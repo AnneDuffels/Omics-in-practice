@@ -1,0 +1,76 @@
+cd ~/projects/brbseq
+
+cat > scripts/make_heatmap_stat5a.R <<'EOF'
+# 1. Lees de gen-count matrix in
+df <- read.delim("results/gene_count_matrix.tsv", check.names = FALSE)
+counts <- as.matrix(df[, 3:ncol(df)])
+gene_labels <- ifelse(is.na(df$GeneSymbol) | df$GeneSymbol == "", df$GeneID, df$GeneSymbol)
+rownames(counts) <- make.unique(gene_labels)
+
+# 2. Sorteer en verkort samplenamen (S1 t/m S24)
+sample_nums <- as.numeric(sub("^Sample_([0-9]+)_.*", "\\1", colnames(counts)))
+ord <- order(sample_nums)
+counts <- counts[, ord]
+sample_nums <- sample_nums[ord]
+colnames(counts) <- paste0("S", sample_nums)
+
+# 3. Normaliseer alle genen naar log2(CPM + 1)
+cpm_all <- sweep(counts, 2, colSums(counts), "/") * 1e6
+log_cpm_all <- log2(cpm_all + 1)
+
+# 4. Combineer STAT5A met de top 39 meest variabele genen
+keep <- rowSums(counts >= 10) >= 3
+vars <- apply(log_cpm_all[keep, ], 1, var)
+top_39 <- names(sort(vars, decreasing = TRUE))[1:39]
+genes_to_plot <- unique(c("STAT5A", top_39))
+genes_to_plot <- genes_to_plot[genes_to_plot %in% rownames(log_cpm_all)]
+
+mat <- log_cpm_all[genes_to_plot, , drop = FALSE]
+
+# 5. Bereken veilige row Z-scores per gen
+mat_z <- t(apply(mat, 1, function(x) {
+  if (sd(x) == 0) rep(0, length(x)) else as.numeric(scale(x))
+}))
+colnames(mat_z) <- colnames(mat)
+mat_z[mat_z > 2.5] <- 2.5
+mat_z[mat_z < -2.5] <- -2.5
+
+palette_cols <- colorRampPalette(c("#2166ac", "#f7f7f7", "#b2182b"))(100)
+
+# 6. Sla de nieuwe heatmap op
+png("results/heatmap_stat5a.png", width = 2200, height = 2400, res = 300)
+if (requireNamespace("pheatmap", quietly = TRUE)) {
+  anno_col <- data.frame(
+    ReplicateGroup = factor(paste0("Group_", ((sample_nums - 1) %% 8) + 1)),
+    row.names = colnames(mat_z)
+  )
+  pheatmap::pheatmap(
+    mat_z,
+    color = palette_cols,
+    annotation_col = anno_col,
+    cluster_rows = TRUE,
+    cluster_cols = TRUE,
+    fontsize_row = 8,
+    fontsize_col = 9,
+    border_color = NA,
+    main = "Heatmap of Top Variable Genes & STAT5A (Row Z-score)"
+  )
+} else {
+  heatmap(
+    mat_z,
+    col = palette_cols,
+    scale = "none",
+    margins = c(5, 8),
+    cexRow = 0.75,
+    cexCol = 0.85,
+    main = "Heatmap of Top Variable Genes & STAT5A (Z-score)"
+  )
+}
+dev.off()
+
+cat("Heatmap opgeslagen als results/heatmap_stat5a.png\n")
+cat("\nRuwe UMI-counts voor STAT5A per sample:\n")
+print(counts["STAT5A", ])
+EOF
+
+Rscript scripts/make_heatmap_stat5a.R
