@@ -1,0 +1,214 @@
+cd ~/projects/brbseq
+
+cat > scripts/update_plots_with_metadata.R <<'EOF'
+# 1. Load count matrix and order samples S1..S24
+df <- read.delim("results/gene_count_matrix.tsv", check.names = FALSE)
+counts <- as.matrix(df[, 3:ncol(df)])
+gene_labels <- ifelse(is.na(df$GeneSymbol) | df$GeneSymbol == "", df$GeneID, df$GeneSymbol)
+rownames(counts) <- make.unique(gene_labels)
+
+orig_cols <- colnames(counts)
+sample_nums <- as.numeric(sub("^Sample_([0-9]+)_.*", "\\1", orig_cols))
+ord <- order(sample_nums)
+counts <- counts[, ord]
+orig_cols <- orig_cols[ord]
+sample_nums <- sample_nums[ord]
+barcodes <- sub("^Sample_[0-9]+_(.*)", "\\1", orig_cols)
+
+# 2. Map S1..S24 to K562 timepoints (3 replicates each)
+timepoints <- c("K562 0h", "K562 6h", "K562 1d", "K562 2d",
+                "K562 3d", "K562 4d", "K562 7d", "K562 8d")
+cond_idx <- ((sample_nums - 1) %% 8) + 1
+rep_num  <- ((sample_nums - 1) %/% 8) + 1
+conditions <- factor(timepoints[cond_idx], levels = timepoints)
+short_ids <- paste0("S", sample_nums)
+colnames(counts) <- short_ids
+
+meta <- data.frame(
+  SampleID = short_ids,
+  Barcode = barcodes,
+  Condition = conditions,
+  Replicate = paste0("Rep", rep_num),
+  stringsAsFactors = FALSE
+)
+write.table(meta, "results/sample_metadata.tsv", sep = "\t", row.names = FALSE, quote = FALSE)
+
+# Color gradient from 0h (cool blue) to 8d (warm red)
+cond_palette <- c("#2b5c8f", "#3b8bc2", "#4eb3d3", "#7bccc4",
+                  "#fdb863", "#f16913", "#d94801", "#99000d")
+names(cond_palette) <- timepoints
+sample_cols <- cond_palette[as.character(conditions)]
+
+# Normalize counts -> log2(CPM + 1)
+cpm_all <- sweep(counts, 2, colSums(counts), "/") * 1e6
+log_cpm_all <- log2(cpm_all + 1)
+keep <- rowSums(counts >= 10) >= 3
+log_cpm <- log_cpm_all[keep, ]
+
+# ==============================================================================
+# A. UPDATED PCA PLOT (Color-coded by K562 0h -> 8d)
+# ==============================================================================
+vars <- apply(log_cpm, 1, var)
+top500 <- order(vars, decreasing = TRUE)[1:min(500, nrow(log_cpm))]
+pca <- prcomp(t(log_cpm[top500, ]), center = TRUE, scale. = FALSE)
+var_exp <- round(100 * (pca$sdev^2 / sum(pca$sdev^2)), 1)
+
+png("results/pca_plot.png", width = 2300, height = 1650, res = 300)
+par(mar = c(5, 5, 4, 8.5), xpd = FALSE)
+plot(pca$x[, 1], pca$x[, 2],
+     xlab = paste0("PC1 (", var_exp[1], "% variance)"),
+     ylab = paste0("PC2 (", var_exp[2], "% variance)"),
+     main = "PCA of K562 Drug Treatment Time Course",
+     pch = 19, col = sample_cols, cex = 1.5,
+     xlim = range(pca$x[, 1]) * 1.18,
+     ylim = range(pca$x[, 2]) * 1.18)
+grid(col = "gray88", lty = "dotted")
+abline(h = 0, v = 0, col = "gray70", lty = 2)
+points(pca$x[, 1], pca$x[, 2], pch = 19, col = sample_cols, cex = 1.5)
+label_pos <- ifelse(rep_num == 1, 3, ifelse(rep_num == 2, 1, 4))
+text(pca$x[, 1], pca$x[, 2], labels = short_ids, pos = label_pos, offset = 0.35, cex = 0.72)
+
+par(xpd = TRUE)
+legend(x = par("usr")[2] + diff(par("usr")[1:2]) * 0.03,
+       y = par("usr")[4],
+       legend = timepoints,
+       col = cond_palette,
+       pch = 19, pt.cex = 1.3, cex = 0.85,
+       title = "Condition", bty = "n")
+dev.off()
+
+# ==============================================================================
+# B. UPDATED HEATMAP (Top 39 variable genes + STAT5A, labeled with timepoints)
+# ==============================================================================
+top39 <- names(sort(vars, decreasing = TRUE))[1:39]
+genes_hm <- unique(c("STAT5A", top39))
+genes_hm <- genes_hm[genes_hm %in% rownames(log_cpm_all)]
+mat_hm <- log_cpm_all[genes_hm, ]
+colnames(mat_hm) <- paste0(short_ids, " (", conditions, ")")
+
+mat_z <- t(apply(mat_hm, 1, function(x) if (sd(x) == 0) rep(0, length(x)) else as.numeric(scale(x))))
+colnames(mat_z) <- colnames(mat_hm)
+mat_z[mat_z > 2.5] <- 2.5
+mat_z[mat_z < -2.5] <- -2.5
+hm_cols <- colorRampPalette(c("#2166ac", "#f7f7f7", "#b2182b"))(100)
+
+png("results/heatmap_stat5a.png", width = 2400, height = 2500, res = 300)
+if (requireNamespace("pheatmap", quietly = TRUE)) {
+  anno_col <- data.frame(Condition = conditions, row.names = colnames(mat_z))
+  pheatmap::pheatmap(
+    mat_z,
+    color = hm_cols,
+    annotation_col = anno_col,
+    annotation_colors = list(Condition = cond_palette),
+    cluster_rows = TRUE,
+    cluster_cols = TRUE,
+    fontsize_row = 8,
+    fontsize_col = 8,
+    border_color = NA,
+    main = "K562 Time Course: Top Variable Genes & STAT5A (Row Z-score)"
+  )
+} else {
+  heatmap(
+    mat_z,
+    col = hm_cols,
+    ColSideColors = sample_cols,
+    scale = "none",
+    margins = c(8, 8),
+    cexRow = 0.75,
+    cexCol = 0.78,
+    main = "K562 Time Course: Variable Genes & STAT5A"
+  )
+}
+dev.off()
+
+# ==============================================================================
+# C. UPDATED VOLCANO PLOT (K562 8d vs K562 0h, clean label spacing + STAT5A)
+# ==============================================================================
+group_treat <- "K562 8d"
+group_ctrl  <- "K562 0h"
+idx_treat <- which(conditions == group_treat)
+idx_ctrl  <- which(conditions == group_ctrl)
+
+sub_counts <- counts[, c(idx_ctrl, idx_treat)]
+sub_counts <- sub_counts[rowSums(sub_counts >= 10) >= 2, ]
+
+if (requireNamespace("DESeq2", quietly = TRUE)) {
+  coldata <- data.frame(
+    Condition = factor(c(rep("Ctrl", length(idx_ctrl)), rep("Treat", length(idx_treat)))),
+    row.names = colnames(sub_counts)
+  )
+  dds <- DESeq2::DESeqDataSetFromMatrix(countData = round(sub_counts), colData = coldata, design = ~ Condition)
+  dds <- DESeq2::DESeq(dds, quiet = TRUE)
+  res <- as.data.frame(DESeq2::results(dds, contrast = c("Condition", "Treat", "Ctrl")))
+  res_df <- data.frame(Gene = rownames(res), log2FC = res$log2FoldChange,
+                       pvalue = res$pvalue, padj = res$padj, stringsAsFactors = FALSE)
+} else {
+  sub_lfc <- log_cpm_all[rownames(sub_counts), ]
+  log2FC <- rowMeans(sub_lfc[, idx_treat, drop = FALSE]) - rowMeans(sub_lfc[, idx_ctrl, drop = FALSE])
+  pvals <- apply(sub_lfc, 1, function(x) {
+    v1 <- x[idx_treat]; v2 <- x[idx_ctrl]
+    if (sd(v1) == 0 && sd(v2) == 0) return(1)
+    t.test(v1, v2)$p.value
+  })
+  res_df <- data.frame(Gene = rownames(sub_lfc), log2FC = log2FC,
+                       pvalue = pvals, padj = p.adjust(pvals, method = "BH"), stringsAsFactors = FALSE)
+}
+
+res_df <- res_df[!is.na(res_df$padj) & !is.na(res_df$log2FC), ]
+res_df$padj[res_df$padj == 0] <- min(res_df$padj[res_df$padj > 0]) * 0.1
+res_df$negLog10Padj <- -log10(res_df$padj)
+res_sorted <- res_df[order(res_df$padj), ]
+write.table(res_sorted, "results/de_K562_8d_vs_0h.tsv", sep = "\t", row.names = FALSE, quote = FALSE)
+
+lfc_cut  <- 1
+padj_cut <- 0.05
+res_df$Status <- "Not significant"
+res_df$Status[res_df$padj < padj_cut & res_df$log2FC >  lfc_cut] <- "Upregulated"
+res_df$Status[res_df$padj < padj_cut & res_df$log2FC < -lfc_cut] <- "Downregulated"
+pt_cols <- ifelse(res_df$Status == "Upregulated", "#b2182b",
+           ifelse(res_df$Status == "Downregulated", "#2166ac", "gray78"))
+
+png("results/volcano_plot.png", width = 2200, height = 1850, res = 300)
+par(mar = c(5, 5, 4, 2))
+plot(res_df$log2FC, res_df$negLog10Padj,
+     pch = 19, cex = 0.75, col = pt_cols,
+     xlab = "log2 Fold Change (K562 8d vs K562 0h)",
+     ylab = "-log10(Adjusted P-value / FDR)",
+     main = "Volcano Plot: K562 8d vs K562 0h",
+     ylim = c(0, max(res_df$negLog10Padj) * 1.24))
+grid(col = "gray88", lty = "dotted")
+abline(v = c(-lfc_cut, lfc_cut), col = "gray40", lty = 2)
+abline(h = -log10(padj_cut), col = "gray40", lty = 2)
+
+top_hits <- head(res_sorted$Gene[res_sorted$padj < padj_cut & abs(res_sorted$log2FC) > lfc_cut], 10)
+sub_lab <- res_df[res_df$Gene %in% top_hits, ]
+if (nrow(sub_lab) > 0) {
+  text(sub_lab$log2FC, sub_lab$negLog10Padj, labels = sub_lab$Gene,
+       pos = 3, offset = 0.35, cex = 0.68, font = 2)
+}
+
+stat_row <- res_df[res_df$Gene == "STAT5A", ]
+if (nrow(stat_row) == 1) {
+  points(stat_row$log2FC, stat_row$negLog10Padj, pch = 18, cex = 1.7, col = "#e69f00")
+  text(stat_row$log2FC, stat_row$negLog10Padj, labels = "STAT5A",
+       pos = 4, offset = 0.4, cex = 0.75, font = 2, col = "#b25900")
+}
+
+legend("topleft",
+       legend = c(
+         paste0("Upregulated in 8d (", sum(res_df$Status == "Upregulated"), ")"),
+         paste0("Downregulated in 8d (", sum(res_df$Status == "Downregulated"), ")"),
+         "Not significant",
+         "STAT5A (Gene of interest)"
+       ),
+       col = c("#b2182b", "#2166ac", "gray78", "#e69f00"),
+       pch = c(19, 19, 19, 18),
+       pt.cex = c(1, 1, 1, 1.4),
+       bty = "n", cex = 0.85)
+dev.off()
+
+cat("All updated files saved in results/:\n")
+cat("- sample_metadata.tsv\n- pca_plot.png\n- heatmap_stat5a.png\n- volcano_plot.png\n- de_K562_8d_vs_0h.tsv\n")
+EOF
+
+Rscript scripts/update_plots_with_metadata.R
