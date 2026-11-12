@@ -1,0 +1,42 @@
+cd ~/projects/brbseq
+python3 - <<'EOF'
+raw_dir = "results/starsolo/Solo.out/Gene/raw"
+sample_map_file = "/scratch/Omics_in_practice/data/BRBseq/barcode_samples.tsv"
+
+bc_to_sample = {}
+with open(sample_map_file) as f:
+    next(f)
+    for line in f:
+        parts = line.strip().split()
+        if len(parts) >= 2:
+            bc_to_sample[parts[0]] = f"Sample_{parts[1]}_{parts[0]}"
+
+with open(f"{raw_dir}/barcodes.tsv") as f:
+    barcodes = [line.strip() for line in f if line.strip()]
+col_names = [bc_to_sample.get(bc, bc) for bc in barcodes]
+
+genes = []
+with open(f"{raw_dir}/features.tsv") as f:
+    for line in f:
+        parts = line.strip().split("\t")
+        genes.append((parts[0], parts[1]))
+
+counts = [[0] * len(barcodes) for _ in range(len(genes))]
+with open(f"{raw_dir}/umiDedup-1MM_Directional.mtx") as f:
+    dims_seen = False
+    for line in f:
+        if line.startswith("%"):
+            continue
+        if not dims_seen:
+            dims_seen = True
+            continue
+        r, c, val = map(int, line.split())
+        counts[r - 1][c - 1] = val
+
+with open("results/gene_count_matrix.tsv", "w") as out:
+    out.write("GeneID\tGeneSymbol\t" + "\t".join(col_names) + "\n")
+    for (gid, gsym), row in zip(genes, counts):
+        out.write(f"{gid}\t{gsym}\t" + "\t".join(map(str, row)) + "\n")
+
+print(f"Klaar! Matrix opgeslagen: {len(genes)} genen x {len(barcodes)} samples")
+EOF
