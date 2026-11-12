@@ -1,0 +1,50 @@
+cd ~/projects/brbseq
+
+cat > scripts/make_pca.R <<'EOF'
+# 1. Lees de gen-count matrix in
+df <- read.delim("results/gene_count_matrix.tsv", check.names = FALSE)
+counts <- as.matrix(df[, 3:ncol(df)])
+rownames(counts) <- df$GeneID
+
+# 2. Maak korte, overzichtelijke samplenamen (S1 t/m S24) en sorteer op nummer
+sample_nums <- as.numeric(sub("^Sample_([0-9]+)_.*", "\\1", colnames(counts)))
+ord <- order(sample_nums)
+counts <- counts[, ord]
+colnames(counts) <- paste0("S", sample_nums[ord])
+
+# 3. Filter laag tot niet tot expressie komende genen weg
+keep <- rowSums(counts >= 10) >= 3
+counts_filt <- counts[keep, ]
+
+# 4. Normaliseer (log2 CPM + 1) en kies de 500 meest variabele genen
+cpm <- sweep(counts_filt, 2, colSums(counts_filt), "/") * 1e6
+log_cpm <- log2(cpm + 1)
+vars <- apply(log_cpm, 1, var)
+top_genes <- order(vars, decreasing = TRUE)[1:min(500, nrow(log_cpm))]
+mat_top <- t(log_cpm[top_genes, ])
+
+# 5. Voer PCA uit en bereken verklaarde variantie (%)
+pca <- prcomp(mat_top, center = TRUE, scale. = FALSE)
+var_exp <- round(100 * (pca$sdev^2 / sum(pca$sdev^2)), 1)
+
+# 6. Sla een scherpe PCA-plot op (PNG)
+png("results/pca_plot.png", width = 2000, height = 1600, res = 300)
+par(mar = c(5, 5, 4, 2))
+plot(pca$x[, 1], pca$x[, 2],
+     xlab = paste0("PC1 (", var_exp[1], "% variance)"),
+     ylab = paste0("PC2 (", var_exp[2], "% variance)"),
+     main = "PCA of BRB-seq Samples (Top 500 Variable Genes)",
+     pch = 19, col = "#2b5c8f", cex = 1.4,
+     xlim = range(pca$x[, 1]) * 1.15,
+     ylim = range(pca$x[, 2]) * 1.15)
+grid(col = "gray85", lty = "dotted")
+abline(h = 0, v = 0, col = "gray70", lty = 2)
+points(pca$x[, 1], pca$x[, 2], pch = 19, col = "#2b5c8f", cex = 1.4)
+text(pca$x[, 1], pca$x[, 2], labels = rownames(pca$x), pos = 3, cex = 0.75, col = "black")
+dev.off()
+
+cat("PCA succesvol opgeslagen in results/pca_plot.png\n")
+cat("PC1:", var_exp[1], "% | PC2:", var_exp[2], "%\n")
+EOF
+
+Rscript scripts/make_pca.R
