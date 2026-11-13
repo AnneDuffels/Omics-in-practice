@@ -1,24 +1,24 @@
 cd ~/projects/brbseq
 
 cat > scripts/make_heatmap_stat5a.R <<'EOF'
-# 1. Lees de gen-count matrix in
+# 1. Read the gene count matrix
 df <- read.delim("results/gene_count_matrix.tsv", check.names = FALSE)
 counts <- as.matrix(df[, 3:ncol(df)])
 gene_labels <- ifelse(is.na(df$GeneSymbol) | df$GeneSymbol == "", df$GeneID, df$GeneSymbol)
 rownames(counts) <- make.unique(gene_labels)
 
-# 2. Sorteer en verkort samplenamen (S1 t/m S24)
+# 2. Sort and shorten sample names (S1 to S24)
 sample_nums <- as.numeric(sub("^Sample_([0-9]+)_.*", "\\1", colnames(counts)))
 ord <- order(sample_nums)
 counts <- counts[, ord]
 sample_nums <- sample_nums[ord]
 colnames(counts) <- paste0("S", sample_nums)
 
-# 3. Normaliseer alle genen naar log2(CPM + 1)
+# 3. Normalize all genes to log2(CPM + 1)
 cpm_all <- sweep(counts, 2, colSums(counts), "/") * 1e6
 log_cpm_all <- log2(cpm_all + 1)
 
-# 4. Combineer STAT5A met de top 39 meest variabele genen
+# 4. Combine STAT5A with the top 39 most variable genes
 keep <- rowSums(counts >= 10) >= 3
 vars <- apply(log_cpm_all[keep, ], 1, var)
 top_39 <- names(sort(vars, decreasing = TRUE))[1:39]
@@ -27,7 +27,7 @@ genes_to_plot <- genes_to_plot[genes_to_plot %in% rownames(log_cpm_all)]
 
 mat <- log_cpm_all[genes_to_plot, , drop = FALSE]
 
-# 5. Bereken veilige row Z-scores per gen
+# 5. Calculate safe row Z-scores per gene
 mat_z <- t(apply(mat, 1, function(x) {
   if (sd(x) == 0) rep(0, length(x)) else as.numeric(scale(x))
 }))
@@ -37,7 +37,7 @@ mat_z[mat_z < -2.5] <- -2.5
 
 palette_cols <- colorRampPalette(c("#2166ac", "#f7f7f7", "#b2182b"))(100)
 
-# 6. Sla de nieuwe heatmap op
+# 6. Save the new heatmap
 png("results/heatmap_stat5a.png", width = 2200, height = 2400, res = 300)
 if (requireNamespace("pheatmap", quietly = TRUE)) {
   anno_col <- data.frame(
@@ -68,8 +68,8 @@ if (requireNamespace("pheatmap", quietly = TRUE)) {
 }
 dev.off()
 
-cat("Heatmap opgeslagen als results/heatmap_stat5a.png\n")
-cat("\nRuwe UMI-counts voor STAT5A per sample:\n")
+cat("Heatmap saved as results/heatmap_stat5a.png\n")
+cat("\nRaw UMI counts for STAT5A per sample:\n")
 print(counts["STAT5A", ])
 EOF
 
