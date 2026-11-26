@@ -1,0 +1,92 @@
+cd /scratch/anneduffels/proteomics/data
+
+cat << 'EOF' > correlate_prot_rna.R
+library(tidyverse)
+
+prot <- read.csv("DEP_DMSO_drug_vs_DMSO.csv", stringsAsFactors = FALSE)
+tpm <- read.delim("/scratch/Omics_in_practice/data/RNAseq_polyA_K562/GRCh38-TPM.tsv", stringsAsFactors = FALSE)
+counts <- read.delim("/scratch/Omics_in_practice/data/RNAseq_polyA_K562/GRCh38-counts.tsv", stringsAsFactors = FALSE)
+
+gtf_lines <- readLines("/scratch/Omics_in_practice/data/TSS_genes/gencode.v50.annotation.gtf.gz")
+gtf_gene <- gtf_lines[!grepl("^#", gtf_lines) & grepl("\tgene\t", gtf_lines)]
+
+extract_attr <- function(x, key) {
+  m <- regmatches(x, regexpr(paste0(key, " \"[^\"]+\""), x))
+  sub(paste0(key, " \"([^\"]+)\""), "\\1", m)
+}
+
+annot <- tibble(
+  gene_id_ver = extract_attr(gtf_gene, "gene_id"),
+  gene_id = sub("\\.[0-9]+$", "", gene_id_ver),
+  gene_name = extract_attr(gtf_gene, "gene_name")
+) %>% distinct(gene_id, .keep_all = TRUE)
+
+counts_mean <- counts %>%
+  mutate(
+    gene_id = sub("\\.[0-9]+$", "", gene),
+    mean_counts = rowMeans(across(starts_with("K562RNAseqrep")), na.rm = TRUE),
+    log2_counts1 = log2(mean_counts + 1)
+  ) %>%
+  select(gene_id, mean_counts, log2_counts1)
+
+tpm_annot <- tpm %>%
+  mutate(
+    gene_id = sub("\\.[0-9]+$", "", gene),
+    mean_tpm = rowMeans(across(starts_with("K562RNAseqrep")), na.rm = TRUE),
+    log2_tpm1 = log2(mean_tpm + 1)
+  ) %>%
+  left_join(annot, by = "gene_id") %>%
+  left_join(counts_mean, by = "gene_id")
+
+merged <- inner_join(
+  prot,
+  tpm_annot %>% filter(!is.na(gene_name), gene_name != ""),
+  by = c("name" = "gene_name")
+)
+
+cat("Gematchte genen/eiwitten:", nrow(merged), "\n")
+print(
+  merged %>%
+    filter(name == "STAT5A") %>%
+    select(name, ID, DMSO_drug_vs_DMSO_ratio, DMSO_drug_vs_DMSO_p.adj, mean_tpm, log2_tpm1, mean_counts, log2_counts1)
+)
+
+r_pear <- cor(merged$DMSO_drug_vs_DMSO_ratio, merged$log2_tpm1, use = "complete.obs", method = "pearson")
+r_spear <- cor(merged$DMSO_drug_vs_DMSO_ratio, merged$log2_tpm1, use = "complete.obs", method = "spearman")
+test_pear <- cor.test(merged$DMSO_drug_vs_DMSO_ratio, merged$log2_tpm1, method = "pearson")
+test_spear <- cor.test(merged$DMSO_drug_vs_DMSO_ratio, merged$log2_tpm1, method = "spearman")
+
+cat(sprintf("Pearson r  (prot log2FC vs log2(TPM+1)):   %.4f (p = %.3e)\n", r_pear, test_pear$p.value))
+cat(sprintf("Spearman rho (prot log2FC vs log2(TPM+1)): %.4f (p = %.3e)\n", r_spear, test_spear$p.value))
+
+write.csv(merged, "prot_rna_merged.csv", row.names = FALSE)
+
+p <- ggplot(merged, aes(x = log2_tpm1, y = DMSO_drug_vs_DMSO_ratio)) +
+  geom_point(aes(color = significant), alpha = 0.45, size = 1.4) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 0.8) +
+  geom_point(
+    data = merged %>% filter(name == "STAT5A"),
+    color = "red", size = 3.2
+  ) +
+  annotate(
+    "text",
+    data = merged %>% filter(name == "STAT5A"),
+    aes(x = log2_tpm1, y = DMSO_drug_vs_DMSO_ratio, label = "STAT5A"),
+    hjust = -0.15, vjust = 0.4, color = "red", fontface = "bold"
+  ) +
+  scale_color_manual(values = c("FALSE" = "grey60", "TRUE" = "#1f78b4")) +
+  theme_bw(base_size = 12) +
+  labs(
+    title = "Proteome fold-change vs. K562 RNA-seq expression",
+    subtitle = sprintf("n = %d | Pearson r = %.3f (p = %.2e) | Spearman rho = %.3f (p = %.2e)",
+                       nrow(merged), r_pear, test_pear$p.value, r_spear, test_spear$p.value),
+    x = "K562 RNA-seq mean expression: log2(TPM + 1)",
+    y = "Proteomics log2FC (DMSO_drug vs. DMSO)",
+    color = "Significant protein"
+  )
+
+ggsave("prot_vs_rna_correlation.pdf", p, width = 8, height = 5.5)
+cat("Opgeslagen: prot_rna_merged.csv en prot_vs_rna_correlation.pdf\n")
+EOF
+
+Rscript correlate_prot_rna.R
