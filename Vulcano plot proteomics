@@ -1,0 +1,97 @@
+conda activate /scratch/anneduffels/conda/envs/proteomics_r
+cd /scratch/anneduffels/proteomics/data
+
+cat << 'EOF' > plot_volcano_stat5a.R
+library(tidyverse)
+library(ggrepel)
+
+prot <- read.csv("DEP_DMSO_drug_vs_DMSO.csv", stringsAsFactors = FALSE)
+
+df <- prot %>%
+  mutate(
+    gene_clean = sub("\\.[0-9]+$", "", name),
+    neg_log10_p = -log10(DMSO_drug_vs_DMSO_p.val),
+    is_stat5a = (toupper(gene_clean) == "STAT5A" & significant == TRUE),
+    point_group = case_when(
+      is_stat5a ~ "STAT5A",
+      significant == TRUE ~ "Significant",
+      TRUE ~ "Not significant"
+    ),
+    rank_score = abs(DMSO_drug_vs_DMSO_ratio) * neg_log10_p
+  )
+
+# Selecteer top labels zoals in de originele volcano plot + forceer STAT5A
+top_names <- df %>%
+  filter(significant == TRUE, !is_stat5a) %>%
+  arrange(desc(neg_log10_p)) %>%
+  slice_head(n = 35) %>%
+  pull(name)
+
+df <- df %>%
+  mutate(
+    plot_label = case_when(
+      is_stat5a ~ "STAT5A",
+      name %in% top_names ~ name,
+      TRUE ~ ""
+    )
+  )
+
+p <- ggplot(df, aes(x = DMSO_drug_vs_DMSO_ratio, y = neg_log10_p)) +
+  geom_point(
+    data = df %>% filter(point_group == "Not significant"),
+    color = "grey75", size = 1.6, alpha = 0.8
+  ) +
+  geom_point(
+    data = df %>% filter(point_group == "Significant"),
+    color = "black", size = 1.7, alpha = 0.85
+  ) +
+  geom_point(
+    data = df %>% filter(point_group == "STAT5A"),
+    color = "#d62728", size = 3.6
+  ) +
+  geom_vline(xintercept = 0, linetype = "solid", color = "black", linewidth = 0.5) +
+  geom_text_repel(
+    data = df %>% filter(plot_label != "", !is_stat5a),
+    aes(label = plot_label),
+    size = 3.0,
+    max.overlaps = 30,
+    box.padding = 0.25,
+    point.padding = 0.15,
+    segment.color = "grey50",
+    segment.size = 0.3
+  ) +
+  geom_label_repel(
+    data = df %>% filter(is_stat5a),
+    aes(label = plot_label),
+    color = "#d62728",
+    fill = "white",
+    fontface = "bold",
+    size = 3.8,
+    nudge_x = -2.2,
+    nudge_y = 0.4,
+    box.padding = 0.4,
+    point.padding = 0.3,
+    arrow = arrow(length = unit(0.015, "npc"), type = "closed"),
+    segment.color = "#d62728",
+    segment.size = 0.6
+  ) +
+  annotate("text", x = min(df$DMSO_drug_vs_DMSO_ratio, na.rm = TRUE) * 0.92, y = 0.15,
+           label = "DMSO", fontface = "bold", size = 3.8, hjust = 0) +
+  annotate("text", x = max(df$DMSO_drug_vs_DMSO_ratio, na.rm = TRUE) * 0.92, y = 0.15,
+           label = "DMSO_drug", fontface = "bold", size = 3.8, hjust = 1) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 14),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "DMSO_drug_vs_DMSO",
+    x = expression(log[2]~"Fold change"),
+    y = expression(-log[10]~"P-value")
+  )
+
+ggsave("volcano_DMSO_drug_vs_DMSO_STAT5A.pdf", p, width = 9.5, height = 6.5)
+cat("Opgeslagen: volcano_DMSO_drug_vs_DMSO_STAT5A.pdf\n")
+EOF
+
+Rscript plot_volcano_stat5a.R
