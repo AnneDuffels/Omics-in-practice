@@ -1,0 +1,83 @@
+conda activate /scratch/anneduffels/conda/envs/proteomics_r
+cd /scratch/anneduffels/proteomics/data
+
+cat << 'EOF' > run_enrichment_brbseq_all_go_sig.R
+library(tidyverse)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+de <- read.delim("/scratch/anneduffels/brbseq/results/de_K562_8d_vs_0h.tsv", stringsAsFactors = FALSE)
+
+down_genes <- de %>%
+  filter(!is.na(padj), padj < 0.05, !is.na(log2FC), log2FC < 0) %>%
+  mutate(gene_clean = sub("\\.[0-9]+$", "", Gene)) %>%
+  pull(gene_clean) %>%
+  unique()
+
+up_genes <- de %>%
+  filter(!is.na(padj), padj < 0.05, !is.na(log2FC), log2FC > 0) %>%
+  mutate(gene_clean = sub("\\.[0-9]+$", "", Gene)) %>%
+  pull(gene_clean) %>%
+  unique()
+
+run_and_plot_all_go <- function(genes, out_prefix, title_txt) {
+  ego <- enrichGO(
+    gene          = genes,
+    OrgDb         = org.Hs.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "ALL",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05,
+    qvalueCutoff  = 0.2,
+    readable      = TRUE
+  )
+  df <- as.data.frame(ego)
+  write.csv(df, paste0(out_prefix, "_GO_ALL_sig.csv"), row.names = FALSE)
+
+  if (nrow(df) > 0) {
+    top_df <- df %>%
+      arrange(p.adjust) %>%
+      slice_head(n = 12) %>%
+      mutate(
+        neg_log10_padj = -log10(p.adjust),
+        padj_label     = sprintf("p=%.1e (n=%d)", p.adjust, Count),
+        term_label     = paste0(Description, " [", ONTOLOGY, "]"),
+        term_wrapped   = str_wrap(term_label, width = 52),
+        term_wrapped   = fct_reorder(term_wrapped, neg_log10_padj)
+      )
+
+    max_x <- max(top_df$neg_log10_padj, na.rm = TRUE)
+
+    p <- ggplot(top_df, aes(x = neg_log10_padj, y = term_wrapped, fill = neg_log10_padj)) +
+      geom_col(width = 0.72) +
+      geom_text(aes(label = padj_label), hjust = -0.06, size = 3.2) +
+      scale_fill_viridis_c(option = "plasma", end = 0.88, name = "-log10(adj. p)") +
+      coord_cartesian(xlim = c(0, max_x * 1.38), clip = "off") +
+      theme_bw(base_size = 11) +
+      theme(
+        plot.title    = element_text(size = 13, face = "bold"),
+        plot.subtitle = element_text(size = 10.5),
+        plot.margin   = margin(t = 12, r = 45, b = 12, l = 15)
+      ) +
+      labs(
+        title    = title_txt,
+        subtitle = sprintf("GO BP, MF & CC (BH p < 0.05; n = %d input genes)", length(genes)),
+        x        = "-log10(BH-adjusted p-value)",
+        y        = NULL
+      )
+
+    ggsave(paste0(out_prefix, "_GO_ALL_sig.pdf"), p, width = 11.5, height = 6.5)
+    cat("Opgeslagen:", paste0(out_prefix, "_GO_ALL_sig.pdf en _GO_ALL_sig.csv\n"))
+  } else {
+    cat("Geen significante GO-termen gevonden voor:", title_txt, "\n")
+  }
+}
+
+run_and_plot_all_go(down_genes, "enrichment_brbseq_down_8d_vs_0h",
+                    "Downregulated genes (K562 8d vs 0h) — All GO terms")
+run_and_plot_all_go(up_genes, "enrichment_brbseq_up_8d_vs_0h",
+                    "Upregulated genes (K562 8d vs 0h) — All GO terms")
+EOF
+
+Rscript run_enrichment_brbseq_all_go_sig.R
+ls -lh enrichment_brbseq_*
